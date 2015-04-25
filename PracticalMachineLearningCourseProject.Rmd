@@ -1,0 +1,165 @@
+---
+title: "Precitive Models Based on Wearable Human Activity Devices"
+author: "James Hufton"
+date: "April 26, 2015"
+output: html_document
+---
+
+
+
+```{r, eval=TRUE, echo=FALSE, message=FALSE, error=FALSE, warning=FALSE}
+#Load Libraries
+library(caret)
+library(ggplot2)
+library(knitr)
+library(stringr)
+library(xtable)
+library(grid)
+#Configure for Parallel Process Using all 6 CPU cores
+library(doMC)
+registerDoMC(cores = 6)
+
+```
+
+This R-based study creates a predictive model based on activity data drawn from the accelerometers embedded in wearable human activity tracking devices.  Several different model method types are tried and the best performing resulting model (based on the accuracy of predictions) is selected to compute predictions based on data from 20 subjects.
+
+Data used in this study comes from the  study "Wearable Computing: Accelerometers' Data Classification of Body Postures and Movements[^1]" by Wallace Uglino, Débora Carador, Katia  Vega, Eduardo Velloso, Ruy Milidiú, and Hugo Fuks.
+
+[^1]:
+Ugulino, W.; Cardador, D.; Vega, K.; Velloso, E.; Milidiu, R.; Fuks, H. Wearable Computing: Accelerometers' Data Classification of Body Postures and Movements. Proceedings of 21st Brazilian Symposium on Artificial Intelligence. Advances in Artificial Intelligence - SBIA 2012. In: Lecture Notes in Computer Science. , pp. 52-61. Curitiba, PR: Springer Berlin / Heidelberg, 2012. ISBN 978-3-642-34458-9. DOI: 10.1007/978-3-642-34459-6_6. Cited by 2 (Google Scholar) Read more: http://groupware.les.inf.puc-rio.br/har#ixzz3YFArS9uP
+
+##Preparing the Data
+
+An initial investigation of the raw data set (loaded from pml-training.csv) showed that there were many columns in the data set that had no usable data.  Since we were looking to build a model based on numeric data, each candidate predictor column in the data set was analyzed to see if it would be suitable for our model.  The analysis consisted of running the count() from the plyr library to produce a list of the distinct values in the column and a count of the number of times each value occurred in the data set.  The function summary() was also used to further check metrics on the data.
+
+There were a substantial number of potential predictor columns that were found to have essentially no usable data with 98% of entries in the column being NAs.  While kth nearest neighbor could be used to impute some number of missing values, the essential lack of any usable information precluded any consideration of using that technique. 
+
+The columns eliminated for that reason were 12:36, 50:59, 69:83, 87:112, 125:139, 141:150. Additionally columns 1:7 where eliminated as not having data that was relevant to the analysis.
+
+The same columns were also removed from the 20 row testing data set (loaded from pml-testing.csv) used to make predictions for the course submission.
+
+Two further checks were made on the filtered data set for data quality, looking for columns that had near zero variance predictors and columns that were correlated with each other.  We found that there were no near zero variance columns in our filtered list of predictor columns, so no further processing for that characteristic was needed.  We did find there were several correlated predictor columns which were then eliminated from the predictor columns that survived the first filter step described above. The final, filtered version of the original training data had 39 predictor columns and 1 independent variable.
+
+The final, filtered main data set was split 75%:25% to create training and testing data sets for the model creation and validation steps used to evaluate model training methods to find the best candiate model method based on the accuracy score of each model method.
+
+```{r, message=FALSE}
+#Set the working directory
+setwd("/Volumes/DiskStation1/jhufton/MyDownload/Coursera/DataScientistsToolbox/PracticalMachineLearning/CourseProject")
+#Load the training data.  Make sure empty and blank fields are translated to NAs
+naStrings <- c("", " ")
+trainingAll <- read.csv("pml-training.csv", na.strings=naStrings)
+testingSubmit <- read.csv("pml-testing.csv", na.strings=naStrings)
+set.seed(44325)
+# The following columns do not contain usable data (98% of the entries are NA), 
+# remove them from the training dataset
+#Remove columns that are 98% NAs
+badcolumns <- c(1:7,12:36,50:59,69:83,87:112,125:139,141:150)
+trainingAll <- trainingAll[,-badcolumns]
+testingSubmit <- testingSubmit[,-badcolumns]
+
+#Check for Near Zero Variance Predictors in the Dataset
+#After running this we find there are none, so no data messaging necessary
+#nearZeroVar(trainingAll[,-badcolumns], saveMetrics= TRUE)
+
+#Check for correlated predictors in the Dataset
+descrCor <-  cor(trainingAll[,-(ncol(trainingAll))])
+highCorr <- sum(abs(descrCor[upper.tri(descrCor)]) > .99) 
+#Remove correlated columns which exceed the 80% cutoff
+highlyCorDescr <- findCorrelation(descrCor, cutoff = .80)
+trainingAll <- trainingAll[,-highlyCorDescr]
+testingSubmit <- testingSubmit[,-highlyCorDescr]
+
+#Create training and testing data sets
+inTrain  <- createDataPartition(y=trainingAll$classe, p=0.75, list=FALSE)
+training <- trainingAll[inTrain,]
+testing <- trainingAll[-inTrain,]
+```
+
+##Random Forest Model Rules!
+
+In our exploratory work, we determined that the most accurate prediction was produced by a model created with Random Forest, pre-processed with center and scale and resampling, crossvalidation using repeatedcv using 10 k-folds and repeated 10 times. The accuracy achieved by this model was 99.16% shown in the results below.  Appendix 1 below has a chart of the various models that were tried when looking for the most successful model specification that was used in the code block immediately below.
+
+```{r randomForest, cache=TRUE}
+#99.16% Accuracy! Using 6-way parallelism, Repeated CV resampling, Center & Scale preprocessing
+set.seed(44325)
+fitControl <- trainControl(## 10-fold CV
+                           method = "repeatedcv",
+                           number = 10,
+                           ## repeated ten times
+                           repeats = 10)
+modelFitRf2 <- train(classe ~ ., method = "rf", preProcess=c("center", "scale"), data = training, trControl = fitControl)
+predictionsRf2 <- predict(modelFitRf2, newdata = testing[,-52])
+modelFitRf2
+confusionMatrix(predictionsRf2, testing$classe)
+modelFitRf2$finalModel
+modelFitRf2$times
+```
+
+###Out of Sample Error
+
+The Out of Sample Error rate is defined as the error rate one gets on the predictions made by a model using a data set different from the one used to create the model (i.e a new data set).  Therefore we must use the testing data set to compute the Out of Sample Error (Generalization Error), it cannot be generated using predictions made from the training data set used to create the model.
+
+The Confusion Matrix shows the prediction results using the previously computed Model Fit and the testing data set.  Summing the diagonal of the confusion matrix shows the correct predictions from the Model Fit and the testing data set.  The rest of the non-zero entries in the matrix are the incorrect predictions.  Ratio of incorrect to correct predictions is the Out of Sample Error rate, which is 1 - Accuracy from the output of the confusionMatrix() function.
+
+```{r ooserror}
+#Calculate metrics for Out of Sample Error based on the confusion matrix from 
+#our model predictions for the testing data set
+confMatrix <- confusionMatrix(predictionsRf2, testing$classe)
+correctPredictions <- sum(diag(confMatrix$table))
+incorrectPredictions <- nrow(testing) - sum(diag(confMatrix$table))
+oosampleError <- round(incorrectPredictions/correctPredictions, 4)
+accuracy <- round(confMatrix$overall[1],4)
+
+```
+
+    Total Predictions: `r nrow(testing)`
+    Correct Predictions: `r correctPredictions`
+    Incorrect Predictions: `r incorrectPredictions`
+    Out of Sample Error Rate: `r oosampleError`
+    Accuracy: `r accuracy`
+    1 - `r accuracy` = `r oosampleError`
+
+
+
+
+
+#Appendix 1
+
+##Results of Exploratory Investigation of Alternative Methods
+
+Below is a table of results for various model method types that were tried before settling on the type chosen:
+
+```{r printModelSummary, results='asis'}
+
+modelSummary <- read.csv("ModelPerformanceSummary.csv")
+names(modelSummary) <- c("Model Method","Accuracy","PreProcess","Resampling",
+                         "Correlated Predictors","set.seed","Parallelism","Elapse Time")
+modelSumPlot <- xtable(modelSummary, caption=c("Results of Exploratory Investigation of Alternative Methods"))
+print.xtable(modelSumPlot, type="html", include.rownames=FALSE)
+```
+
+Note that 6-way parallelism was used to speed up the model creation process.  This was implemented using Revolution Analytics' doMC package.  All 6 CPUs of the Mac Pro (late 2013) used for this project were configured to participate in the model creation process.  A check was made to ensure that the same results were achieved whether 6-way parallelism was used or not.  The speed up observed was roughly 4.2x, which while not perfect scalability (which would have been 6x) still provided a useful reduction in overall processing time.
+
+#Appendix 2
+
+There are two submissions required for this course project: this writeup and a submission of predictions based on data contained in the pml-testing.csv file.
+
+The following code block creates 20 files in the working directory, each with a predicted outcome based on our preferred model as required for submitting these results.  Our predictions based on our preferred model were submitted, all were found to be correct.
+
+##Create the 20 Files Containing the Predictions for Submission
+```{r submissionFiles}
+#Create a set of 20 predictions based on our preferred model.
+predictionsSubmission <- predict(modelFitRf2, newdata=testingSubmit)
+predictionsSubmission
+
+#Create 20 files, each with a predicted outcome for its respective row of data.
+#Here we use the function provided in the course project description to create the files.
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+
+```
